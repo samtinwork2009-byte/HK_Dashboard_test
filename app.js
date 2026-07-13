@@ -5,6 +5,177 @@
 
 'use strict';
 
+const HKDashboardState = window.HKDashboardState || {
+  currentPage: 'home',
+  loadedPages: {},
+  loadedModules: {
+    core: true,
+    app: true,
+    weather: true,
+    transport: true,
+    health: true,
+    environment: true,
+    finance: true
+  }
+};
+window.HKDashboardState = HKDashboardState;
+
+const PAGE_MODULE_URLS = {
+  bus: 'js/bus.js',
+  tides: 'js/tides.js',
+  parking: 'js/parking.js',
+  ferry: 'js/ferry.js',
+  holidays: 'js/holidays.js',
+  climate: 'js/climate.js',
+  beach: 'js/beach.js',
+  map: 'js/map.js',
+  cctv: 'js/cctv.js',
+  waste: 'js/waste.js'
+};
+
+let autoRefreshTimers = [];
+
+function escapeHtml(value) {
+  return String(value || '').replace(/[&<>"'`]/g, char => {
+    return {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+      '`': '&#96;'
+    }[char];
+  });
+}
+
+function loadPageModule(name) {
+  if (!PAGE_MODULE_URLS[name] || HKDashboardState.loadedModules[name]) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = PAGE_MODULE_URLS[name];
+    script.async = false;
+    script.onload = () => {
+      HKDashboardState.loadedModules[name] = true;
+      resolve();
+    };
+    script.onerror = () => reject(new Error(`Failed to load page module: ${PAGE_MODULE_URLS[name]}`));
+    document.body.appendChild(script);
+  });
+}
+
+function refreshCurrentPage() {
+  const page = HKDashboardState.currentPage;
+  switch (page) {
+    case 'weather':
+      safeRun('Weather', () => Weather.refresh());
+      loadWeatherForecastText();
+      break;
+    case 'transport':
+      safeRun('Transport', () => Transport.refresh());
+      break;
+    case 'health':
+      safeRun('Health', () => Health.refresh());
+      break;
+    case 'environment':
+      safeRun('Environment', () => Environment.refresh());
+      break;
+    case 'bus':
+      if (HKDashboardState.loadedPages.bus) {
+        safeRun('Bus', () => Bus.refresh());
+      }
+      break;
+    case 'parking':
+      if (HKDashboardState.loadedPages.parking) {
+        safeRun('Parking', () => Parking.refresh());
+      }
+      break;
+    case 'ferry':
+      if (HKDashboardState.loadedPages.ferry) {
+        safeRun('Ferry', () => Ferry.refresh());
+      }
+      break;
+    case 'tides':
+      if (HKDashboardState.loadedPages.tides) {
+        safeRun('Tides', () => Tides.refresh());
+      }
+      break;
+    case 'holidays':
+      if (HKDashboardState.loadedPages.holidays) {
+        safeRun('Holidays', () => Holidays.refresh());
+      }
+      break;
+    case 'climate':
+      if (HKDashboardState.loadedPages.climate) {
+        safeRun('Climate', () => Climate.refresh());
+      }
+      break;
+    case 'beach':
+      if (HKDashboardState.loadedPages.beach) {
+        safeRun('Beach', () => Beach.refresh());
+      }
+      break;
+    case 'map':
+      if (HKDashboardState.loadedPages.map) {
+        safeRun('Map', () => MapView.refresh());
+      }
+      break;
+    case 'cctv':
+      if (HKDashboardState.loadedPages.cctv) {
+        safeRun('CCTV', () => CCTV.refresh());
+      }
+      break;
+    case 'waste':
+      if (HKDashboardState.loadedPages.waste) {
+        safeRun('Waste', () => Waste.refresh());
+      }
+      break;
+    default:
+      loadAllData();
+  }
+}
+
+function stopAutoRefresh() {
+  autoRefreshTimers.forEach(clearInterval);
+  autoRefreshTimers = [];
+}
+
+function startAutoRefresh() {
+  if (autoRefreshTimers.length) return;
+
+  autoRefreshTimers.push(setInterval(async () => {
+    await Promise.allSettled([
+      safeRun('Weather',     () => Weather.refresh()),
+      safeRun('Health',      () => Health.refresh()),
+      safeRun('Environment', () => Environment.refresh()),
+    ]);
+  }, 60000));
+
+  autoRefreshTimers.push(setInterval(async () => {
+    await safeRun('Transport', () => Transport.refresh());
+  }, 10000));
+
+  autoRefreshTimers.push(setInterval(async () => {
+    await safeRun('Bus', () => Bus.refresh());
+  }, 45000));
+
+  autoRefreshTimers.push(setInterval(async () => {
+    if (HKDashboardState.currentPage === 'parking') {
+      await safeRun('Parking', () => Parking.refresh());
+    }
+  }, 300000));
+}
+
+window.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopAutoRefresh();
+  } else {
+    startAutoRefresh();
+    refreshCurrentPage();
+  }
+});
+
 /* ── Offline / Online Detection ──────────────────────────────────── */
 (function initOfflineDetection() {
   // Create the offline banner element
@@ -111,31 +282,29 @@ function initBusPresets() {
 
 /* ── Auto-refresh ────────────────────────────────────────────── */
 function startAutoRefresh() {
-  // Refresh weather/health/environment every 60 seconds
-  setInterval(async () => {
+  if (autoRefreshTimers.length) return;
+
+  autoRefreshTimers.push(setInterval(async () => {
     await Promise.allSettled([
       safeRun('Weather',     () => Weather.refresh()),
       safeRun('Health',      () => Health.refresh()),
       safeRun('Environment', () => Environment.refresh()),
     ]);
-  }, 60000);
+  }, 60000));
 
-  // Transport-specific refresh every 10 seconds
-  setInterval(async () => {
+  autoRefreshTimers.push(setInterval(async () => {
     await safeRun('Transport', () => Transport.refresh());
-  }, 10000);
+  }, 10000));
 
-  // Bus presets every 45 seconds
-  setInterval(async () => {
+  autoRefreshTimers.push(setInterval(async () => {
     await safeRun('Bus', () => Bus.refresh());
-  }, 45000);
+  }, 45000));
 
-  // Parking every 5 minutes
-  setInterval(async () => {
-    if (window._currentPage === 'parking') {
+  autoRefreshTimers.push(setInterval(async () => {
+    if (HKDashboardState.currentPage === 'parking') {
       await safeRun('Parking', () => Parking.refresh());
     }
-  }, 300000);
+  }, 300000));
 }
 
 function renderWidget(title, data, icon, link) {
@@ -279,11 +448,33 @@ async function loadNewsSummary() {
     if (!items.length) throw new Error('no news');
     const inner = document.createElement('div');
     inner.className = 'marquee-inner';
-    inner.innerHTML = items.map(item => `
-      <a href="${item.link}" target="_blank" class="marquee-item">
-        ${item.title}<time>${new Date(item.pubDate).toLocaleTimeString('zh-HK', { hour12:false, hour:'2-digit', minute:'2-digit' })}</time>
-      </a>
-    `).join('');
+    items.forEach(item => {
+      const linkEl = document.createElement('a');
+      linkEl.className = 'marquee-item';
+      linkEl.target = '_blank';
+      linkEl.rel = 'noopener noreferrer';
+
+      try {
+        const itemUrl = new URL(item.link);
+        if (itemUrl.protocol === 'http:' || itemUrl.protocol === 'https:') {
+          linkEl.href = itemUrl.href;
+        } else {
+          linkEl.href = '#';
+        }
+      } catch {
+        linkEl.href = '#';
+      }
+
+      linkEl.textContent = item.title || '無標題新聞';
+      const timeEl = document.createElement('time');
+      timeEl.textContent = new Date(item.pubDate).toLocaleTimeString('zh-HK', {
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      linkEl.appendChild(timeEl);
+      inner.appendChild(linkEl);
+    });
     container.innerHTML = '';
     container.appendChild(inner);
   } catch (e) {
@@ -371,71 +562,82 @@ async function safeRun(label, fn) {
 const _origShowPage = window.showPage;
 window.showPage = function(name) {
   _origShowPage(name);
-  // Trigger immediate refresh for the newly visible page
-  switch (name) {
-    case 'weather':
-      safeRun('Weather', () => Weather.refresh());
-      loadWeatherForecastText();
-      break;
-    case 'transport':
-      safeRun('Transport', () => Transport.refresh());
-      break;
-    case 'health':
-      safeRun('Health', () => Health.refresh());
-      break;
-    case 'environment':
-      safeRun('Environment', () => Environment.refresh());
-      break;
-    case 'bus':
-      // Only reload if presets are empty
-      break;
-    case 'tides':
-      safeRun('Tides', () => Tides.refresh());
-      break;
-    case 'parking':
-      // Only load on first visit
-      if (!window._parkingLoaded) {
-        window._parkingLoaded = true;
-        safeRun('Parking', () => Parking.refresh());
-      }
-      break;
-    case 'ferry':
-      if (!window._ferryLoaded) {
-        window._ferryLoaded = true;
-        safeRun('Ferry', () => Ferry.refresh());
-      }
-      break;
-    case 'beach':
-      if (!window._beachLoaded) {
-        window._beachLoaded = true;
-        safeRun('Beach', () => Beach.refresh());
-      }
-      break;
-    case 'map':
-      safeRun('Map', () => MapView.refresh());
-      break;
-    case 'holidays':
-      // Load on first visit
-      if (!window._holidaysLoaded) {
-        window._holidaysLoaded = true;
-        safeRun('Holidays', () => Holidays.refresh());
-      }
-      break;
-    case 'climate':
-      // Load on first visit
-      if (!window._climateLoaded) {
-        window._climateLoaded = true;
-        safeRun('Climate', () => Climate.refresh());
-      }
-      break;
-    // CCTV: don't auto-load, let user choose cameras
-    case 'waste':
-      if (!window._wasteLoaded) {
-        window._wasteLoaded = true;
-        safeRun('Waste', () => Waste.refresh());
-      }
-      break;
-  }
+  HKDashboardState.currentPage = name;
+
+  const runPageRefresh = () => {
+    switch (name) {
+      case 'weather':
+        safeRun('Weather', () => Weather.refresh());
+        loadWeatherForecastText();
+        break;
+      case 'transport':
+        safeRun('Transport', () => Transport.refresh());
+        break;
+      case 'health':
+        safeRun('Health', () => Health.refresh());
+        break;
+      case 'environment':
+        safeRun('Environment', () => Environment.refresh());
+        break;
+      case 'bus':
+        if (!HKDashboardState.loadedPages.bus) {
+          HKDashboardState.loadedPages.bus = true;
+          safeRun('Bus', () => Bus.refresh());
+        }
+        break;
+      case 'tides':
+        safeRun('Tides', () => Tides.refresh());
+        break;
+      case 'parking':
+        if (!HKDashboardState.loadedPages.parking) {
+          HKDashboardState.loadedPages.parking = true;
+          safeRun('Parking', () => Parking.refresh());
+        }
+        break;
+      case 'ferry':
+        if (!HKDashboardState.loadedPages.ferry) {
+          HKDashboardState.loadedPages.ferry = true;
+          safeRun('Ferry', () => Ferry.refresh());
+        }
+        break;
+      case 'beach':
+        if (!HKDashboardState.loadedPages.beach) {
+          HKDashboardState.loadedPages.beach = true;
+          safeRun('Beach', () => Beach.refresh());
+        }
+        break;
+      case 'map':
+        safeRun('Map', () => MapView.refresh());
+        break;
+      case 'holidays':
+        if (!HKDashboardState.loadedPages.holidays) {
+          HKDashboardState.loadedPages.holidays = true;
+          safeRun('Holidays', () => Holidays.refresh());
+        }
+        break;
+      case 'climate':
+        if (!HKDashboardState.loadedPages.climate) {
+          HKDashboardState.loadedPages.climate = true;
+          safeRun('Climate', () => Climate.refresh());
+        }
+        break;
+      case 'waste':
+        if (!HKDashboardState.loadedPages.waste) {
+          HKDashboardState.loadedPages.waste = true;
+          safeRun('Waste', () => Waste.refresh());
+        }
+        break;
+      default:
+        break;
+    }
+  };
+
+  loadPageModule(name)
+    .then(runPageRefresh)
+    .catch(e => {
+      console.warn('Page lazy load failed:', e);
+      runPageRefresh();
+    });
 };
 
 /* ── Load weather forecast text for weather page ─────────────── */
@@ -453,25 +655,25 @@ async function loadWeatherForecastText() {
         ${generalSituation ? `
           <div>
             <div style="font-size:var(--text-xs);color:var(--text-faint);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:var(--sp-2)">天氣概況 General Situation</div>
-            <div style="font-size:var(--text-sm);line-height:1.7;color:var(--text-muted)">${generalSituation}</div>
+            <div style="font-size:var(--text-sm);line-height:1.7;color:var(--text-muted)">${escapeHtml(generalSituation)}</div>
           </div>
         ` : ''}
         ${forecastDesc ? `
           <div>
             <div style="font-size:var(--text-xs);color:var(--text-faint);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:var(--sp-2)">天氣預測 Forecast</div>
-            <div style="font-size:var(--text-sm);line-height:1.7;color:var(--text-muted)">${forecastDesc}</div>
+            <div style="font-size:var(--text-sm);line-height:1.7;color:var(--text-muted)">${escapeHtml(forecastDesc)}</div>
           </div>
         ` : ''}
         ${outlook ? `
           <div>
             <div style="font-size:var(--text-xs);color:var(--text-faint);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:var(--sp-2)">展望 Outlook</div>
-            <div style="font-size:var(--text-sm);line-height:1.7;color:var(--text-muted)">${outlook}</div>
+            <div style="font-size:var(--text-sm);line-height:1.7;color:var(--text-muted)">${escapeHtml(outlook)}</div>
           </div>
         ` : ''}
       </div>
     `;
   } catch(e) {
-    cont.innerHTML = `<div style="color:var(--error);font-size:var(--text-xs)">載入失敗：${e.message}</div>`;
+    cont.innerHTML = `<div style="color:var(--error);font-size:var(--text-xs)">載入失敗：${escapeHtml(e.message)}</div>`;
   }
 }
 

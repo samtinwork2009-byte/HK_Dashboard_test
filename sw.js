@@ -49,6 +49,12 @@ self.addEventListener('activate', event => {
   );
 });
 
+self.addEventListener('message', event => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
 /* ── Fetch: cache-first for static, network-first for API ───── */
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
@@ -56,12 +62,25 @@ self.addEventListener('fetch', event => {
   // Skip non-GET requests
   if (event.request.method !== 'GET') return;
 
-  // API calls: network-first with cache fallback
-  const isAPI = [
-    'data.weather.gov.hk',
+  const networkOnlyHosts = [
     'rt.data.gov.hk',
     'data.etabus.gov.hk',
-    'data.etagmb.gov.hk',
+    'data.etagmb.gov.hk'
+  ];
+  const isNetworkOnlyAPI = networkOnlyHosts.some(host => url.hostname.includes(host));
+
+  if (isNetworkOnlyAPI) {
+    event.respondWith(
+      fetch(event.request)
+        .catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  // API calls: network-first with cache fallback.
+  // Avoid serving stale traffic responses from cache on subsequent polling.
+  const isAPI = [
+    'data.weather.gov.hk',
     'api.data.gov.hk',
     'datagovhk.blob.core.windows.net',
     'www.ha.org.hk',
@@ -71,21 +90,32 @@ self.addEventListener('fetch', event => {
 
   if (isAPI) {
     event.respondWith(
-      fetch(event.request)
-        .then(response => {
-          if (response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then(cache => {
-              // Cache API responses for 5 minutes max
-              cache.put(event.request, clone);
-            });
+      caches.open(CACHE_NAME).then(cache => {
+        return cache.match(event.request).then(cachedResponse => {
+          const networkPromise = fetch(event.request)
+            .then(networkResponse => {
+              if (networkResponse && networkResponse.ok) {
+                cache.put(event.request, networkResponse.clone());
+              }
+              return networkResponse;
+            })
+            .catch(() => null);
+
+          if (cachedResponse) {
+            // Always return cached response immediately, but update cache in the background.
+            event.waitUntil(networkPromise);
+            return cachedResponse;
           }
-          return response;
-        })
-        .catch(() => caches.match(event.request))
+
+          return networkPromise.then(response => response || new Response('Service Unavailable', { status: 503, statusText: 'Service Unavailable' }));
+        });
+      })
     );
     return;
   }
+
+  const isStaticAsset = ['document', 'script', 'style', 'image', 'font', 'manifest'].includes(event.request.destination);
+  if (!isStaticAsset) return;
 
   // Static assets: cache-first
   event.respondWith(
@@ -98,7 +128,6 @@ self.addEventListener('fetch', event => {
         }
         return response;
       }).catch(() => {
-        // Return offline fallback for HTML pages
         if (event.request.destination === 'document') {
           return caches.match('/index.html');
         }
